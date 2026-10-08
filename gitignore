@@ -1,0 +1,10 @@
+# Hemmeligheter og lokal tilstand — ALDRI sjekk inn
+config.env
+.env
+*.log
+
+# Modellvekter (store — lastes ned på instansen)
+models/
+*.safetensors
+*.gguf
+*.bin
