@@ -8,3 +8,10 @@ models/
 *.safetensors
 *.gguf
 *.bin
+
+# Recon output (generated briefs + cached CVE feeds)
+recon/out/
+
+# Python bytecode
+__pycache__/
+*.pyc

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# bootstrap.sh — installerer alt på en fersk Vast-instans (vLLM-image).
-# KJØR ./preflight.sh FØRST. Hvert steg er isolert: feiler CAI, står
-# vLLM-kjernen likevel. Idempotent — trygt å kjøre flere ganger.
+# bootstrap.sh — installs everything on a fresh Vast instance (vLLM image).
+# RUN ./preflight.sh FIRST. Each step is isolated: if CAI fails, the vLLM
+# core still stands. Idempotent — safe to run multiple times.
 set -uo pipefail
 cd "$(dirname "$0")"
 source ./lib.sh
@@ -13,7 +13,7 @@ MAX_LEN="${MAX_MODEL_LEN:-131072}"
 LONG_CONTEXT="${LONG_CONTEXT:-1}"
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"
-PORT="${PORT:-8001}"                 # 8001: 8000 er opptatt av Vast sin caddy
+PORT="${PORT:-8001}"                 # 8001: 8000 is taken by Vast's caddy
 TP_SIZE="${TP_SIZE:-1}"
 GPU_UTIL="${GPU_UTIL:-0.85}"
 API_KEY="${API_KEY:-$(openssl rand -hex 16)}"
@@ -22,94 +22,108 @@ LOG="$HOME/bootstrap.log"
 : > "$LOG"
 
 printf "${C_BOLD}${C_CYA}=== BOOTSTRAP ===${C_RESET}\n"
-info "Modell:      $MODEL_ID"
-info "Port:        $PORT   |  Parser: $TOOL_PARSER  |  Kort: $TP_SIZE"
-info "Kontekst:    $MAX_LEN  |  YaRN: $LONG_CONTEXT  |  KV: $KV_CACHE_DTYPE"
-info "Full logg:   $LOG"
+info "Model:       $MODEL_ID"
+info "Port:        $PORT   |  Parser: $TOOL_PARSER  |  Cards: $TP_SIZE"
+info "Context:     $MAX_LEN  |  YaRN: $LONG_CONTEXT  |  KV: $KV_CACHE_DTYPE"
+info "Full log:    $LOG"
 
-# --- 1. Systempakker ---------------------------------------------------
-step "Systempakker (git, git-lfs, tmux, curl, jq)"
+# --- 1. System packages ------------------------------------------------
+step "System packages (git, git-lfs, tmux, curl, jq)"
 export DEBIAN_FRONTEND=noninteractive
-run_quiet "apt-get update"  "$LOG" -- apt-get update -qq || warn "apt update ga feil (ofte ufarlig)"
-run_quiet "installerer"     "$LOG" -- apt-get install -y -qq git git-lfs tmux curl jq openssl lsof psmisc \
-  || die "Klarte ikke installere systempakker."
+run_quiet "apt-get update"  "$LOG" -- apt-get update -qq || warn "apt update returned an error (often harmless)"
+run_quiet "installing"      "$LOG" -- apt-get install -y -qq git git-lfs tmux curl jq openssl lsof psmisc \
+  || die "Could not install system packages."
 git lfs install --skip-repo >>"$LOG" 2>&1 || true
-ok "Systempakker klare"
+ok "System packages ready"
 
-# --- 2. vLLM / torch: IKKE rør hvis de finnes --------------------------
-# Lærdom: 'pip install -U vllm' på et vLLM-image trigger xformers-bygging
-# som feiler (manglende torch i build-env). Sjekk først, hopp over hvis OK.
-step "Sjekker vLLM + torch (skal allerede finnes på vLLM-imaget)"
+# --- 2. Recon/pentest tooling (non-fatal) ------------------------------
+# Supports recon/vuln-recon.sh: searchsploit (exploitdb) for public PoCs,
+# whatweb + nmap for fingerprinting. Non-fatal: on an image where a package
+# isn't in the repos, we warn and continue — the vLLM core is unaffected.
+step "Recon tooling (exploitdb/searchsploit, whatweb, nmap)"
+if run_quiet "installing recon tools" "$LOG" -- apt-get install -y -qq exploitdb whatweb nmap; then
+  command -v searchsploit >/dev/null 2>&1 && searchsploit -u >>"$LOG" 2>&1 || true
+  ok "Recon tooling ready"
+else
+  warn "Could not install all recon tools via apt (not in this image's repos?)."
+  warn "vuln-recon.sh still works on CISA KEV + NVD (needs only curl + jq)."
+  warn "searchsploit fallback: git clone https://gitlab.com/exploit-database/exploitdb"
+fi
+
+# --- 3. vLLM / torch: DON'T touch if present ---------------------------
+# Lesson: 'pip install -U vllm' on a vLLM image triggers an xformers build
+# that fails (torch missing in the build env). Check first, skip if OK.
+step "Checking vLLM + torch (should already exist on the vLLM image)"
 if python -c "import vllm, torch" >>"$LOG" 2>&1; then
   VLLM_V=$(python -c "import vllm; print(vllm.__version__)" 2>/dev/null)
   TORCH_V=$(python -c "import torch; print(torch.__version__)" 2>/dev/null)
-  ok "vLLM $VLLM_V / torch $TORCH_V finnes — rører dem ikke"
+  ok "vLLM $VLLM_V / torch $TORCH_V present — leaving them alone"
 else
-  warn "vLLM/torch mangler — du er trolig IKKE på et vLLM-image."
-  warn "Installerer vLLM (kan ta lang tid og feile på feil image)..."
+  warn "vLLM/torch missing — you are probably NOT on a vLLM image."
+  warn "Installing vLLM (can take a long time and fail on the wrong image)..."
   run_quiet "pip install vllm" "$LOG" -- pip install -q vllm \
-    || die "vLLM-install feilet. Velg et vLLM-image på Vast neste gang."
-  ok "vLLM installert"
+    || die "vLLM install failed. Pick a vLLM image on Vast next time."
+  ok "vLLM installed"
 fi
 
-# --- 3. huggingface_hub: pin, IKKE -U ----------------------------------
-# Lærdom: '-U huggingface_hub' drar til 2.x som bryter transformers/tokenizers.
-step "Hugging Face CLI (pinnet til <2.0 for kompatibilitet)"
+# --- 4. huggingface_hub: pin, DON'T -U ---------------------------------
+# Lesson: '-U huggingface_hub' pulls 2.x which breaks transformers/tokenizers.
+step "Hugging Face CLI (pinned to <2.0 for compatibility)"
 if hf --help >/dev/null 2>&1 && python -c "import huggingface_hub as h; exit(0 if int(h.__version__.split('.')[0])<2 else 1)" 2>/dev/null; then
-  ok "hf finnes i kompatibel versjon"
+  ok "hf present in a compatible version"
 else
-  run_quiet "installerer hf" "$LOG" -- pip install -q "huggingface_hub>=1.5.0,<2.0" \
-    || die "Klarte ikke installere huggingface_hub."
-  ok "hf klar"
+  run_quiet "installing hf" "$LOG" -- pip install -q "huggingface_hub>=1.5.0,<2.0" \
+    || die "Could not install huggingface_hub."
+  ok "hf ready"
 fi
 
-# Valgfri HF-token (raskere/garantert nedlasting)
+# Optional HF token (faster/guaranteed download)
 if [ -n "${HF_TOKEN:-}" ]; then
-  hf auth login --token "$HF_TOKEN" >>"$LOG" 2>&1 && ok "Logget inn på HF" || warn "HF-login feilet (fortsetter)"
+  hf auth login --token "$HF_TOKEN" >>"$LOG" 2>&1 && ok "Logged in to HF" || warn "HF login failed (continuing)"
 fi
 
-# --- 4. Last ned modellen ----------------------------------------------
-step "Laster ned modell (~55 GB — dette tar tid)"
+# --- 5. Download the model ---------------------------------------------
+step "Downloading model (~55 GB — this takes a while)"
 mkdir -p "$MODEL_DIR"
 TARGET="$MODEL_DIR/$(basename "$MODEL_ID")"
 if [ -d "$TARGET" ] && [ -n "$(ls -A "$TARGET" 2>/dev/null)" ]; then
-  info "Finnes allerede i $TARGET — hopper over (slett mappa for ny nedlasting)"
-  ok "Modell på plass"
+  info "Already present in $TARGET — skipping (delete the dir for a fresh download)"
+  ok "Model in place"
 else
-  info "Fremdrift vises live under:"
+  info "Live progress below:"
   if hf download "$MODEL_ID" --local-dir "$TARGET"; then
-    ok "Modell lastet ned"
+    ok "Model downloaded"
   else
-    die "Modell-nedlasting feilet. Sjekk repo-navnet og evt. HF_TOKEN i config.env."
+    die "Model download failed. Check the repo name and HF_TOKEN in config.env."
   fi
 fi
 
-# --- 5. CAI i ISOLERT venv ---------------------------------------------
-# Lærdom: CAI river fastapi/openai/mcp/starlette ut under vLLM hvis den
-# installeres i samme miljø. Eget venv + mcp>=2.3 for at importen virker.
-step "CAI-harness (isolert venv — rører ikke vLLM-miljøet)"
+# --- 6. CAI in an ISOLATED venv ----------------------------------------
+# Lesson: CAI tears fastapi/openai/mcp/starlette out from under vLLM if it's
+# installed in the same environment. Own venv + mcp>=2.3 so the import works.
+step "CAI harness (isolated venv — doesn't touch the vLLM environment)"
 CAI_VENV="$HOME/cai-venv"
 if [ -x "$CAI_VENV/bin/cai" ] && "$CAI_VENV/bin/python" -c "import cai" >>"$LOG" 2>&1; then
-  ok "CAI finnes allerede i $CAI_VENV"
+  ok "CAI already present in $CAI_VENV"
 else
-  run_quiet "lager venv"        "$LOG" -- python3 -m venv "$CAI_VENV" || warn "venv-opprettelse ga feil"
-  run_quiet "oppgraderer pip"   "$LOG" -- "$CAI_VENV/bin/pip" install -q -U pip || true
-  if run_quiet "installerer cai-framework" "$LOG" -- "$CAI_VENV/bin/pip" install -q cai-framework; then
-    # CAI trenger nyere mcp enn den drar inn selv
-    run_quiet "fikser mcp-versjon" "$LOG" -- "$CAI_VENV/bin/pip" install -q "mcp>=2.3.0" || true
+  run_quiet "creating venv"     "$LOG" -- python3 -m venv "$CAI_VENV" || warn "venv creation returned an error"
+  run_quiet "upgrading pip"     "$LOG" -- "$CAI_VENV/bin/pip" install -q -U pip || true
+  if run_quiet "installing cai-framework" "$LOG" -- "$CAI_VENV/bin/pip" install -q cai-framework; then
+    # CAI needs a newer mcp than it pulls in itself
+    run_quiet "fixing mcp version" "$LOG" -- "$CAI_VENV/bin/pip" install -q "mcp>=2.3.0" || true
     if "$CAI_VENV/bin/python" -c "import cai" >>"$LOG" 2>&1; then
-      ok "CAI installert og importerer"
+      ok "CAI installed and imports"
     else
-      warn "CAI installert men importerer ikke rent — vLLM virker likevel."
-      warn "Du kan bruke et annet harness (aider/openhands) mot API-et i mellomtiden."
+      warn "CAI installed but doesn't import cleanly — vLLM works regardless."
+      warn "You can use another harness (aider/openhands) against the API meanwhile."
     fi
   else
-    warn "CAI-install feilet — hopper over. vLLM-kjernen er upåvirket."
+    warn "CAI install failed — skipping. The vLLM core is unaffected."
   fi
 fi
 
-# --- 6. Skriv .env -----------------------------------------------------
-step "Skriver ~/.env"
+# --- 7. Write .env -----------------------------------------------------
+step "Writing ~/.env"
 cat > "$HOME/.env" <<EOF
 OPENAI_API_BASE=http://localhost:${PORT}/v1
 OPENAI_BASE_URL=http://localhost:${PORT}/v1
@@ -125,12 +139,12 @@ PORT=${PORT}
 TP_SIZE=${TP_SIZE}
 GPU_UTIL=${GPU_UTIL}
 EOF
-ok "~/.env skrevet"
+ok "~/.env written"
 
 echo ""
-printf "${C_BOLD}${C_GRN}=== FERDIG ===${C_RESET}\n"
-info "Start modell:   ./serve.sh"
+printf "${C_BOLD}${C_GRN}=== DONE ===${C_RESET}\n"
+info "Start model:    ./serve.sh"
 info "Test:           ./smoke-test.sh"
+info "Agent setup:    ./cai-agent/install.sh"
 info "Harness:        ./run-cai.sh"
-printf "    ${C_BOLD}API-nøkkel:${C_RESET}     %s\n" "$API_KEY"
-
+printf "    ${C_BOLD}API key:${C_RESET}       %s\n" "$API_KEY"

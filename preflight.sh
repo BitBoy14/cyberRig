@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# preflight.sh — KJØR DETTE FØRST, før alt annet, på en fersk instans.
-# Sjekker at GPU/VRAM/RAM/disk faktisk holder OG at kortet er ledig for DEG.
-# Den viktigste sjekken er VRAM-ledig: på delte Vast-verter kan kortet være
-# opptatt av andre leietakere — da er det NO-GO uansett hvor stort det er.
+# preflight.sh — RUN THIS FIRST, before anything else, on a fresh instance.
+# Checks that GPU/VRAM/RAM/disk actually hold up AND that the card is free for YOU.
+# The most important check is free VRAM: on shared Vast hosts the card can be
+# busy with other tenants — then it's NO-GO no matter how large it is.
 set -uo pipefail
 cd "$(dirname "$0")"
 source ./lib.sh
 [ -f ./config.env ] && { set -a; source ./config.env; set +a; }
 
-# Krav (kan overstyres i config.env)
-NEED_VRAM_FREE_GB="${NEED_VRAM_FREE_GB:-70}"   # modell ~55GB + KV-cache
+# Requirements (overridable in config.env)
+NEED_VRAM_FREE_GB="${NEED_VRAM_FREE_GB:-70}"   # model ~55GB + KV cache
 NEED_RAM_GB="${NEED_RAM_GB:-32}"
 NEED_DISK_GB="${NEED_DISK_GB:-120}"
 
@@ -17,19 +17,19 @@ printf "${C_BOLD}${C_CYA}=== PREFLIGHT ===${C_RESET}\n"
 
 OK=1
 
-step "GPU til stede?"
+step "GPU present?"
 nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | while read -r n; do info "$n"; done \
-  || die "Ingen GPU. Dette er feil instans."
-ok "GPU funnet"
+  || die "No GPU. This is the wrong instance."
+ok "GPU found"
 
-step "VRAM — er kortet LEDIG for deg?"
+step "VRAM — is the card FREE for you?"
 read_vram
-info "Total: $((VRAM_TOTAL/1024)) GB | Brukt: $((VRAM_USED/1024)) GB | Ledig: $((VRAM_FREE/1024)) GB"
+info "Total: $((VRAM_TOTAL/1024)) GB | Used: $((VRAM_USED/1024)) GB | Free: $((VRAM_FREE/1024)) GB"
 
-# Er opptatt VRAM imagets EGEN vLLM (gjenvinnbar) eller en annen leietaker
-# på et delt kort (ekte NO-GO)? Vast sine vLLM-images kjører sin egen vLLM
-# under supervisor; serve.sh stopper den og frigjør minnet før start. Hvis
-# supervisor-tjenesten 'vllm' kjører, er den opptatte VRAM-en altså din egen.
+# Is the used VRAM the image's OWN vLLM (reclaimable) or another tenant on a
+# shared card (a real NO-GO)? Vast's vLLM images run their own vLLM under
+# supervisor; serve.sh stops it and frees the memory before start. So if the
+# supervisor service 'vllm' is running, the used VRAM is your own.
 OWN_VLLM=0
 if command -v supervisorctl >/dev/null 2>&1 \
    && supervisorctl status vllm 2>/dev/null | grep -q RUNNING; then
@@ -38,55 +38,54 @@ fi
 
 if [ "$VRAM_USED" -gt 2048 ]; then
   if [ "$OWN_VLLM" -eq 1 ]; then
-    warn "$((VRAM_USED/1024)) GB i bruk — men dette er imagets EGEN vLLM"
-    warn "(supervisor-tjenesten 'vllm' kjører). serve.sh stopper den og"
-    warn "frigjør minnet før start. Dette er IKKE et delt kort."
+    warn "$((VRAM_USED/1024)) GB in use — but this is the image's OWN vLLM"
+    warn "(the supervisor service 'vllm' is running). serve.sh stops it and"
+    warn "frees the memory before start. This is NOT a shared card."
   else
-    warn "Kortet har allerede $((VRAM_USED/1024)) GB i bruk."
-    warn "På en fersk instans skal dette være ~0. Er det ikke det, DELER du"
-    warn "kortet med noen andre — og da får du aldri plass til modellen."
+    warn "The card already has $((VRAM_USED/1024)) GB in use."
+    warn "On a fresh instance this should be ~0. If it isn't, you're SHARING"
+    warn "the card with someone else — and you'll never fit the model."
     OK=0
   fi
 else
-  ok "Kortet er tomt ($((VRAM_USED/1024)) GB brukt)"
+  ok "The card is empty ($((VRAM_USED/1024)) GB used)"
 fi
 
-# Nok VRAM tilgjengelig? Når imagets egen vLLM kjører blir praktisk talt
-# hele kortet ledig etter serve.sh, så regn på total i det tilfellet.
+# Enough VRAM available? When the image's own vLLM is running, practically the
+# whole card becomes free after serve.sh, so compute on total in that case.
 if [ "$OWN_VLLM" -eq 1 ]; then
   AVAIL_GB=$((VRAM_TOTAL/1024))
-  info "Tilgjengelig etter serve.sh rydder image-vLLM: ~${AVAIL_GB} GB"
+  info "Available after serve.sh clears the image vLLM: ~${AVAIL_GB} GB"
 else
   AVAIL_GB=$((VRAM_FREE/1024))
 fi
 if [ "$AVAIL_GB" -ge "$NEED_VRAM_FREE_GB" ]; then
-  ok "Tilgjengelig VRAM holder (>=${NEED_VRAM_FREE_GB} GB)"
+  ok "Available VRAM is enough (>=${NEED_VRAM_FREE_GB} GB)"
 else
-  warn "Tilgjengelig VRAM ${AVAIL_GB} GB < krav ${NEED_VRAM_FREE_GB} GB"
+  warn "Available VRAM ${AVAIL_GB} GB < requirement ${NEED_VRAM_FREE_GB} GB"
   OK=0
 fi
 
 step "RAM"
 RAM=$(free -g | awk '/^Mem:/{print $2}')
 info "${RAM} GB"
-if [ "$RAM" -ge "$NEED_RAM_GB" ]; then ok "OK"; else warn "For lite (<${NEED_RAM_GB})"; OK=0; fi
+if [ "$RAM" -ge "$NEED_RAM_GB" ]; then ok "OK"; else warn "Too little (<${NEED_RAM_GB})"; OK=0; fi
 
-step "Disk (hjemmeområde)"
+step "Disk (home area)"
 DISK=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc '0-9')
-info "${DISK} GB ledig"
-if [ "$DISK" -ge "$NEED_DISK_GB" ]; then ok "OK"; else warn "For lite (<${NEED_DISK_GB}) — skru opp disk-slider på Vast"; OK=0; fi
+info "${DISK} GB free"
+if [ "$DISK" -ge "$NEED_DISK_GB" ]; then ok "OK"; else warn "Too little (<${NEED_DISK_GB}) — turn up the disk slider on Vast"; OK=0; fi
 
 echo ""
 if [ "$OK" -eq 1 ]; then
-  printf "${C_BOLD}${C_GRN}✅ GO — kjør ./bootstrap.sh${C_RESET}\n"
+  printf "${C_BOLD}${C_GRN}✅ GO — run ./bootstrap.sh${C_RESET}\n"
   if [ "$OWN_VLLM" -eq 1 ]; then
-    printf "${C_DIM}   Merk: imagets egen vLLM holder VRAM nå — serve.sh stopper den automatisk.${C_RESET}\n"
+    printf "${C_DIM}   Note: the image's own vLLM holds VRAM now — serve.sh stops it automatically.${C_RESET}\n"
   fi
   exit 0
 else
-  printf "${C_BOLD}${C_RED}⛔ NO-GO — ikke installer noe på denne instansen.${C_RESET}\n"
-  printf "${C_DIM}   Vanligste årsak: delt/opptatt GPU eller for lite disk.${C_RESET}\n"
-  printf "${C_DIM}   Destroy instansen og velg en med tomt, dedikert kort.${C_RESET}\n"
+  printf "${C_BOLD}${C_RED}⛔ NO-GO — don't install anything on this instance.${C_RESET}\n"
+  printf "${C_DIM}   Most common cause: shared/busy GPU or too little disk.${C_RESET}\n"
+  printf "${C_DIM}   Destroy the instance and pick one with an empty, dedicated card.${C_RESET}\n"
   exit 1
 fi
-
