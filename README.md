@@ -51,6 +51,7 @@ Disse feilene er allerede håndtert — du skal slippe å treffe dem igjen:
 | CAI rev ut vLLMs pakker | CAI i eget isolert venv + `mcp>=2.3` |
 | Port 8000 opptatt av Vast caddy | Bruker port 8001 |
 | Krasjet vLLM holdt VRAM som zombie | `serve.sh` rydder med `fuser -k /dev/nvidia*` |
+| Vast-imagets egen vLLM (supervisor, autorestart) holdt ~21 GB VRAM | `serve.sh` kjører `supervisorctl stop vllm model-ui ray` før opprydding; `preflight.sh` skiller dette fra et ekte delt kort (GO, ikke NO-GO) |
 | Delt/opptatt GPU | `preflight.sh` fanger det før install |
 
 ---

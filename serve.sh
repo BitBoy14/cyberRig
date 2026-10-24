@@ -27,16 +27,39 @@ if tmux has-session -t vllm 2>/dev/null; then
   fi
 fi
 
-# --- Rydd eventuelle zombie-prosesser ----------------------------------
-step "Rydder gamle vLLM-prosesser og VRAM"
+# --- Rydd VRAM ---------------------------------------------------------
+# Lærdom 1: Vast sine vLLM-images starter sin EGEN vLLM via supervisor
+# (tjenestene vllm/model-ui/ray, autorestart=true). Den legger beslag på
+# 15-25 GB VRAM FØR cyberRig kjører, og pkill/fuser alene hjelper ikke —
+# supervisor starter den bare opp igjen. Vi må stoppe tjenestene først.
+# Rør IKKE caddy/instance_portal/tunnel_manager — det er Vast sin
+# management-/auth-flate.
+# Lærdom 2: krasjede vLLM-starter etterlater zombie-prosesser som holder
+# VRAM uten at nvidia-smi lister dem. fuser rydder dem som fallback.
+step "Rydder VRAM (stopper imagets egen vLLM-tjeneste først)"
+
+# (a) Stopp supervisor-tjenestene så de ikke restartes (idempotent, trygt)
+if command -v supervisorctl >/dev/null 2>&1; then
+  supervisorctl stop vllm model-ui ray 2>/dev/null || true
+  info "Stoppet supervisor-tjenester (vllm, model-ui, ray)"
+else
+  info "supervisorctl ikke funnet — hopper over (trolig ikke et Vast vLLM-image)"
+fi
+
+# (b) Fallback: drep evt. zombie-prosesser som fortsatt holder kortet
 pkill -9 -f "vllm serve"  2>/dev/null || true
 pkill -9 -f "EngineCore"  2>/dev/null || true
 fuser -k /dev/nvidia* 2>/dev/null || true
+
+# (c) La kjernen frigjøre minnet
 sleep 3
+
+# (d) Verifiser at VRAM faktisk ble frigjort
 read_vram
 info "VRAM etter opprydding: $((VRAM_USED/1024)) GB brukt / $((VRAM_FREE/1024)) GB ledig"
 if [ "$VRAM_USED" -gt 2048 ]; then
   warn "Fortsatt $((VRAM_USED/1024)) GB i bruk etter opprydding."
+  warn "Slapp ikke image-tjenesten taket? Prøv manuelt: supervisorctl stop vllm"
   warn "Hvis dette ikke er din egen prosess, DELER du kortet — kjør ./preflight.sh."
 fi
 
