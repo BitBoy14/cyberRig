@@ -9,10 +9,13 @@ source ./lib.sh
 
 PORT="${PORT:-8001}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
-MAX_LEN="${MAX_MODEL_LEN:-32768}"
+MAX_LEN="${MAX_MODEL_LEN:-131072}"
 TP_SIZE="${TP_SIZE:-1}"
 GPU_UTIL="${GPU_UTIL:-0.85}"
 API_KEY="${OPENAI_API_KEY:-test123}"
+LONG_CONTEXT="${LONG_CONTEXT:-1}"       # 1 = YaRN-skaler fra native til MAX_LEN
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}" # fp8 halverer KV-cache (128k på ett A100 80GB)
+NATIVE_CTX="${NATIVE_CTX:-32768}"       # modellens native kontekst (Qwen3 = 32768)
 
 printf "${C_BOLD}${C_CYA}=== SERVE ===${C_RESET}\n"
 
@@ -65,17 +68,32 @@ fi
 
 # --- Start -------------------------------------------------------------
 step "Starter vLLM i tmux-sesjon 'vllm' (port $PORT, $TP_SIZE kort, util $GPU_UTIL)"
-tmux new-session -d -s vllm "
-  vllm serve '${MODEL_ID}' \
-    --host 0.0.0.0 --port ${PORT} \
-    --api-key '${API_KEY}' \
-    --tensor-parallel-size ${TP_SIZE} \
-    --gpu-memory-utilization ${GPU_UTIL} \
-    --enable-auto-tool-choice \
-    --tool-call-parser ${TOOL_PARSER} \
-    --max-model-len ${MAX_LEN} \
-    2>&1 | tee \$HOME/vllm.log
-"
+
+# Bygg vLLM-kommandoen som array — robust mot spesialtegn i rope-scaling-JSON.
+CMD=( vllm serve "$MODEL_ID"
+  --host 0.0.0.0 --port "$PORT"
+  --api-key "$API_KEY"
+  --tensor-parallel-size "$TP_SIZE"
+  --gpu-memory-utilization "$GPU_UTIL"
+  --enable-auto-tool-choice
+  --tool-call-parser "$TOOL_PARSER"
+  --max-model-len "$MAX_LEN" )
+
+# YaRN: strekk native kontekst til MAX_LEN. factor = MAX_LEN / native.
+if [ "$LONG_CONTEXT" = "1" ] && [ "$MAX_LEN" -gt "$NATIVE_CTX" ]; then
+  FACTOR=$(awk "BEGIN{printf \"%.2f\", $MAX_LEN/$NATIVE_CTX}")
+  CMD+=( --rope-scaling "{\"rope_type\":\"yarn\",\"factor\":$FACTOR,\"original_max_position_embeddings\":$NATIVE_CTX}" )
+  info "YaRN på: $NATIVE_CTX -> $MAX_LEN tokens (factor $FACTOR)"
+fi
+# fp8 KV-cache halverer minnet så lang kontekst får plass på ett A100 80GB.
+[ "$KV_CACHE_DTYPE" != "auto" ] && CMD+=( --kv-cache-dtype "$KV_CACHE_DTYPE" )
+
+# Skriv en launcher så quoting (bl.a. JSON-en) overlever inn i tmux.
+LAUNCHER="$HOME/.cyberrig_vllm_launch.sh"
+{ printf '#!/usr/bin/env bash\n'; printf '%q ' "${CMD[@]}"; printf '\n'; } > "$LAUNCHER"
+chmod +x "$LAUNCHER"
+info "Launch-kommando: $LAUNCHER (cat for å inspisere)"
+tmux new-session -d -s vllm "bash '$LAUNCHER' 2>&1 | tee \$HOME/vllm.log"
 info "Logg strømmes til ~/vllm.log  (tmux attach -t vllm for live)"
 
 # --- Vent, med timeout og feildeteksjon --------------------------------
