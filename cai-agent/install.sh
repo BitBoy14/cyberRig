@@ -23,11 +23,14 @@ info "CAI venv:  $CAI_VENV"
 
 # --- 1. Locate CAI's agents dir ----------------------------------------
 step "Locating CAI agents directory"
-AGENTS_DIR="$("$CAI_VENV/bin/python" - <<'PY' 2>/dev/null
+# CAI prints a "Total CAI Session Cost" banner to stdout when the interpreter
+# exits, which contaminates command substitution. Tag our real output with a
+# sentinel and extract only that line so the banner can't poison AGENTS_DIR.
+AGENTS_DIR="$("$CAI_VENV/bin/python" - <<'PY' 2>/dev/null | sed -n 's/^__CYBERRIG_AGENTS_DIR__=//p'
 import os
 try:
     import cai.agents as a
-    print(os.path.dirname(a.__file__))
+    print("__CYBERRIG_AGENTS_DIR__=" + os.path.dirname(a.__file__))
 except Exception:
     pass
 PY
@@ -47,19 +50,20 @@ ok "Copied cyberrig_pentest.py + pentest-default.md -> $PERSONAL"
 
 # --- 3. Verify CAI discovers it, learn the exact key -------------------
 step "Verifying discovery"
-KEY="$("$CAI_VENV/bin/python" - "$AGENT_VAR" <<'PY' 2>/dev/null
+KEY="$("$CAI_VENV/bin/python" - "$AGENT_VAR" <<'PY' 2>/dev/null | sed -n 's/^__CYBERRIG_KEY__=//p'
 import sys
 want = sys.argv[1]
 try:
     from cai.agents import get_available_agents
     agents = get_available_agents()
     if want in agents:
-        print(want)
+        key = want
     else:
         hits = [k for k in agents if "cyberrig" in k.lower()]
-        print(hits[0] if hits else "")
-except Exception as e:
-    print("")
+        key = hits[0] if hits else ""
+    print("__CYBERRIG_KEY__=" + key)
+except Exception:
+    print("__CYBERRIG_KEY__=")
 PY
 )"
 if [ -n "$KEY" ]; then
