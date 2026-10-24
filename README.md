@@ -55,6 +55,7 @@ Disse feilene er allerede håndtert — du skal slippe å treffe dem igjen:
 | Delt/opptatt GPU | `preflight.sh` fanger det før install |
 | `hermes`-parser matchet ikke Qwen3-Coder-formatet modellen sender (`<function=..><parameter=..>`) → tool-calls ble ren tekst, aldri utført | Default-parser er `qwen3_coder`; `smoke-test.sh` steg 3 fanger mismatch |
 | CAI fylte 32k-konteksten på lange agent-økter → `ContextWindowExceededError`, krasj | YaRN til 128k som default (`LONG_CONTEXT=1`) + `fp8` KV-cache for å få plass på ett A100 80GB |
+| Modellen er Mamba-hybrid: `max_num_seqs` (256) > tilgjengelige Mamba-cache-blokker ved 128k → vLLM-oppstart feilet | Default `MAX_NUM_SEQS=16` (hver sekvens tar én Mamba-blokk) |
 
 ---
 

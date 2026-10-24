@@ -16,6 +16,9 @@ API_KEY="${OPENAI_API_KEY:-test123}"
 LONG_CONTEXT="${LONG_CONTEXT:-1}"       # 1 = YaRN-skaler fra native til MAX_LEN
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}" # fp8 halverer KV-cache (128k på ett A100 80GB)
 NATIVE_CTX="${NATIVE_CTX:-32768}"       # modellens native kontekst (Qwen3 = 32768)
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"      # Mamba-hybrid: hver sekvens tar én Mamba-cache-
+                                        # blokk. vLLM-default (256) sprenger ved lang
+                                        # kontekst; 16 holder rikelig for én agent
 
 printf "${C_BOLD}${C_CYA}=== SERVE ===${C_RESET}\n"
 
@@ -77,7 +80,8 @@ CMD=( vllm serve "$MODEL_ID"
   --gpu-memory-utilization "$GPU_UTIL"
   --enable-auto-tool-choice
   --tool-call-parser "$TOOL_PARSER"
-  --max-model-len "$MAX_LEN" )
+  --max-model-len "$MAX_LEN"
+  --max-num-seqs "$MAX_NUM_SEQS" )
 
 # YaRN: strekk native kontekst til MAX_LEN. factor = MAX_LEN / native.
 if [ "$LONG_CONTEXT" = "1" ] && [ "$MAX_LEN" -gt "$NATIVE_CTX" ]; then
