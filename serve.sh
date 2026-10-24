@@ -8,7 +8,7 @@ source ./lib.sh
 [ -f "$HOME/.env" ] && { set -a; source "$HOME/.env"; set +a; }
 
 PORT="${PORT:-8001}"
-TOOL_PARSER="${TOOL_PARSER:-hermes}"
+TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
 MAX_LEN="${MAX_MODEL_LEN:-32768}"
 TP_SIZE="${TP_SIZE:-1}"
 GPU_UTIL="${GPU_UTIL:-0.85}"

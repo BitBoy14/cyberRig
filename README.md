@@ -53,6 +53,7 @@ Disse feilene er allerede håndtert — du skal slippe å treffe dem igjen:
 | Krasjet vLLM holdt VRAM som zombie | `serve.sh` rydder med `fuser -k /dev/nvidia*` |
 | Vast-imagets egen vLLM (supervisor, autorestart) holdt ~21 GB VRAM | `serve.sh` kjører `supervisorctl stop vllm model-ui ray` før opprydding; `preflight.sh` skiller dette fra et ekte delt kort (GO, ikke NO-GO) |
 | Delt/opptatt GPU | `preflight.sh` fanger det før install |
+| `hermes`-parser matchet ikke Qwen3-Coder-formatet modellen sender (`<function=..><parameter=..>`) → tool-calls ble ren tekst, aldri utført | Default-parser er `qwen3_coder`; `smoke-test.sh` steg 3 fanger mismatch |
 
 ---
 
@@ -60,8 +61,14 @@ Disse feilene er allerede håndtert — du skal slippe å treffe dem igjen:
 `TP_SIZE=2` i `config.env` for 2× kort (tensor-parallellisme).
 
 ## Bytte modell
-Sett `MODEL_ID` og riktig `TOOL_PARSER` i `config.env`. Feil parser →
-tool-calls virker ikke; `smoke-test.sh` steg 3 fanger det.
+Sett `MODEL_ID` og riktig `TOOL_PARSER` i `config.env`. Parseren må matche
+tool-call-formatet modellen faktisk sender, ellers kommer kallene ut som ren
+tekst og kjører aldri:
+- Qwen3-Coder-format (`<function=..><parameter=..>`) → `qwen3_coder` (default)
+- Qwen2.5 / Hermes-JSON (`<tool_call>{"name":..}</tool_call>`) → `hermes`
+- Llama → `llama3_json`
+
+`smoke-test.sh` steg 3 fanger feil parser før du stoler på harnesset.
 
 ## Ekstern tilgang til API-et
 `bootstrap.sh` lager en API-nøkkel (vises til slutt + i `~/.env`).
