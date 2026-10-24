@@ -71,8 +71,23 @@ fi
 # --- Start -------------------------------------------------------------
 step "Starting vLLM in tmux session 'vllm' (port $PORT, $TP_SIZE cards, util $GPU_UTIL)"
 
-# Build the vLLM command as an array — robust against special chars in the rope-scaling JSON.
-CMD=( vllm serve "$MODEL_ID"
+# Prefer the locally downloaded weights. bootstrap.sh downloads with --local-dir
+# into $MODEL_DIR, which is NOT the HF cache — passing the bare repo id here would
+# make vLLM re-download ~55 GB. When we serve from the local path we pin
+# --served-model-name back to the repo id so the API name stays what clients and
+# CAI expect (smoke-test.sh / run-cai.sh / CAI_MODEL in ~/.env all use $MODEL_ID).
+MODEL_PATH="$MODEL_ID"
+SERVED_NAME=""
+LOCAL_DIR="${MODEL_DIR:-$HOME/models}/$(basename "$MODEL_ID")"
+if [ -d "$LOCAL_DIR" ] && [ -n "$(ls -A "$LOCAL_DIR" 2>/dev/null)" ]; then
+  MODEL_PATH="$LOCAL_DIR"; SERVED_NAME="$MODEL_ID"
+  info "Serving local weights: $LOCAL_DIR  (API name: $MODEL_ID)"
+else
+  info "No local weights at $LOCAL_DIR — resolving '$MODEL_ID' from the HF cache/hub"
+fi
+
+# Build the vLLM command as an array — robust against special chars in the rope JSON.
+CMD=( vllm serve "$MODEL_PATH"
   --host 0.0.0.0 --port "$PORT"
   --api-key "$API_KEY"
   --tensor-parallel-size "$TP_SIZE"
@@ -81,12 +96,20 @@ CMD=( vllm serve "$MODEL_ID"
   --tool-call-parser "$TOOL_PARSER"
   --max-model-len "$MAX_LEN"
   --max-num-seqs "$MAX_NUM_SEQS" )
+[ -n "$SERVED_NAME" ] && CMD+=( --served-model-name "$SERVED_NAME" )
 
 # YaRN: stretch native context to MAX_LEN. factor = MAX_LEN / native.
+# vLLM 0.11.1 removed the --rope-scaling / --rope-theta flags; the documented
+# replacement is --hf-overrides under the rope_parameters key. We keep
+# rope_theta explicit because a bare rope override can drop it and silently
+# fall back to base 10000, wrecking long-context quality. Read it from the
+# model's config.json if we can find it, else default to the Qwen3 base (1e6).
 if [ "$LONG_CONTEXT" = "1" ] && [ "$MAX_LEN" -gt "$NATIVE_CTX" ]; then
   FACTOR=$(awk "BEGIN{printf \"%.2f\", $MAX_LEN/$NATIVE_CTX}")
-  CMD+=( --rope-scaling "{\"rope_type\":\"yarn\",\"factor\":$FACTOR,\"original_max_position_embeddings\":$NATIVE_CTX}" )
-  info "YaRN on: $NATIVE_CTX -> $MAX_LEN tokens (factor $FACTOR)"
+  ROPE_THETA=$(jq -r '.rope_theta // .rope_parameters.rope_theta // empty' "$LOCAL_DIR/config.json" 2>/dev/null)
+  ROPE_THETA="${ROPE_THETA:-1000000}"
+  CMD+=( --hf-overrides "{\"rope_parameters\":{\"rope_type\":\"yarn\",\"factor\":$FACTOR,\"original_max_position_embeddings\":$NATIVE_CTX,\"rope_theta\":$ROPE_THETA}}" )
+  info "YaRN on: $NATIVE_CTX -> $MAX_LEN tokens (factor $FACTOR, rope_theta $ROPE_THETA)"
 fi
 # fp8 KV cache halves the memory so long context fits on one A100 80GB.
 [ "$KV_CACHE_DTYPE" != "auto" ] && CMD+=( --kv-cache-dtype "$KV_CACHE_DTYPE" )

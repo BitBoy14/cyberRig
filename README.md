@@ -108,8 +108,10 @@ writes the launch command to `~/.cyberrig_vllm_launch.sh` (cat it to inspect).
 
 VRAM error at startup (`No available memory for the cache blocks`)? Lower
 `MAX_MODEL_LEN` (e.g. 65536), lower `GPU_UTIL`, or use 2× cards. Don't need long
-context: `LONG_CONTEXT=0` + `MAX_MODEL_LEN=32768`. If `--rope-scaling` fails on an
-older vLLM, swap `rope_type` → `type` in `serve.sh`.
+context: `LONG_CONTEXT=0` + `MAX_MODEL_LEN=32768`. YaRN is passed via
+`--hf-overrides '{"rope_parameters":{...}}'` (vLLM 0.11.1 removed the old
+`--rope-scaling` flag). On a pre-0.11.1 vLLM that doesn't know `rope_parameters`,
+use `rope_scaling` instead in `serve.sh`.
 
 ## Change model
 Set `MODEL_ID` and the correct `TOOL_PARSER` in `config.env`. The parser must
