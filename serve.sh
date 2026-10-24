@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# serve.sh — rydder VRAM, starter vLLM i tmux, venter til API-et svarer.
-# Lærdom: krasjede vLLM-starter etterlater zombie-prosesser som holder VRAM
-# uten at nvidia-smi lister dem. Vi rydder med fuser før start.
+# serve.sh — clears VRAM, starts vLLM in tmux, waits until the API responds.
+# Lesson: crashed vLLM starts leave zombie processes that hold VRAM without
+# nvidia-smi listing them. We clear them with fuser before starting.
 set -uo pipefail
 cd "$(dirname "$0")"
 source ./lib.sh
@@ -13,66 +13,65 @@ MAX_LEN="${MAX_MODEL_LEN:-131072}"
 TP_SIZE="${TP_SIZE:-1}"
 GPU_UTIL="${GPU_UTIL:-0.85}"
 API_KEY="${OPENAI_API_KEY:-test123}"
-LONG_CONTEXT="${LONG_CONTEXT:-1}"       # 1 = YaRN-skaler fra native til MAX_LEN
-KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}" # fp8 halverer KV-cache (128k på ett A100 80GB)
-NATIVE_CTX="${NATIVE_CTX:-32768}"       # modellens native kontekst (Qwen3 = 32768)
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"      # Mamba-hybrid: hver sekvens tar én Mamba-cache-
-                                        # blokk. vLLM-default (256) sprenger ved lang
-                                        # kontekst; 16 holder rikelig for én agent
+LONG_CONTEXT="${LONG_CONTEXT:-1}"       # 1 = YaRN-scale from native to MAX_LEN
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}" # fp8 halves the KV cache (128k on one A100 80GB)
+NATIVE_CTX="${NATIVE_CTX:-32768}"       # the model's native context (Qwen3 = 32768)
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"      # Mamba hybrid: each sequence takes one Mamba cache
+                                        # block. vLLM default (256) blows up at long
+                                        # context; 16 is plenty for one agent
 
 printf "${C_BOLD}${C_CYA}=== SERVE ===${C_RESET}\n"
 
-# --- Allerede oppe? ----------------------------------------------------
+# --- Already up? -------------------------------------------------------
 if tmux has-session -t vllm 2>/dev/null; then
   if curl -s -H "Authorization: Bearer ${API_KEY}" "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
-    ok "vLLM kjører allerede på port $PORT. (tmux attach -t vllm)"
+    ok "vLLM already running on port $PORT. (tmux attach -t vllm)"
     exit 0
   else
-    warn "tmux-sesjon 'vllm' finnes men svarer ikke — rydder og starter på nytt."
+    warn "tmux session 'vllm' exists but doesn't respond — clearing and restarting."
     tmux kill-session -t vllm 2>/dev/null || true
   fi
 fi
 
-# --- Rydd VRAM ---------------------------------------------------------
-# Lærdom 1: Vast sine vLLM-images starter sin EGEN vLLM via supervisor
-# (tjenestene vllm/model-ui/ray, autorestart=true). Den legger beslag på
-# 15-25 GB VRAM FØR cyberRig kjører, og pkill/fuser alene hjelper ikke —
-# supervisor starter den bare opp igjen. Vi må stoppe tjenestene først.
-# Rør IKKE caddy/instance_portal/tunnel_manager — det er Vast sin
-# management-/auth-flate.
-# Lærdom 2: krasjede vLLM-starter etterlater zombie-prosesser som holder
-# VRAM uten at nvidia-smi lister dem. fuser rydder dem som fallback.
-step "Rydder VRAM (stopper imagets egen vLLM-tjeneste først)"
+# --- Clear VRAM --------------------------------------------------------
+# Lesson 1: Vast's vLLM images start their OWN vLLM via supervisor
+# (services vllm/model-ui/ray, autorestart=true). It claims 15-25 GB VRAM
+# BEFORE cyberRig runs, and pkill/fuser alone don't help — supervisor just
+# restarts it. We have to stop the services first. Do NOT touch
+# caddy/instance_portal/tunnel_manager — that's Vast's management/auth layer.
+# Lesson 2: crashed vLLM starts leave zombie processes that hold VRAM
+# without nvidia-smi listing them. fuser clears them as a fallback.
+step "Clearing VRAM (stopping the image's own vLLM service first)"
 
-# (a) Stopp supervisor-tjenestene så de ikke restartes (idempotent, trygt)
+# (a) Stop the supervisor services so they aren't restarted (idempotent, safe)
 if command -v supervisorctl >/dev/null 2>&1; then
   supervisorctl stop vllm model-ui ray 2>/dev/null || true
-  info "Stoppet supervisor-tjenester (vllm, model-ui, ray)"
+  info "Stopped supervisor services (vllm, model-ui, ray)"
 else
-  info "supervisorctl ikke funnet — hopper over (trolig ikke et Vast vLLM-image)"
+  info "supervisorctl not found — skipping (probably not a Vast vLLM image)"
 fi
 
-# (b) Fallback: drep evt. zombie-prosesser som fortsatt holder kortet
+# (b) Fallback: kill any zombie processes still holding the card
 pkill -9 -f "vllm serve"  2>/dev/null || true
 pkill -9 -f "EngineCore"  2>/dev/null || true
 fuser -k /dev/nvidia* 2>/dev/null || true
 
-# (c) La kjernen frigjøre minnet
+# (c) Let the kernel free the memory
 sleep 3
 
-# (d) Verifiser at VRAM faktisk ble frigjort
+# (d) Verify VRAM was actually freed
 read_vram
-info "VRAM etter opprydding: $((VRAM_USED/1024)) GB brukt / $((VRAM_FREE/1024)) GB ledig"
+info "VRAM after cleanup: $((VRAM_USED/1024)) GB used / $((VRAM_FREE/1024)) GB free"
 if [ "$VRAM_USED" -gt 2048 ]; then
-  warn "Fortsatt $((VRAM_USED/1024)) GB i bruk etter opprydding."
-  warn "Slapp ikke image-tjenesten taket? Prøv manuelt: supervisorctl stop vllm"
-  warn "Hvis dette ikke er din egen prosess, DELER du kortet — kjør ./preflight.sh."
+  warn "Still $((VRAM_USED/1024)) GB in use after cleanup."
+  warn "Did the image service not let go? Try manually: supervisorctl stop vllm"
+  warn "If this isn't your own process, you're SHARING the card — run ./preflight.sh."
 fi
 
 # --- Start -------------------------------------------------------------
-step "Starter vLLM i tmux-sesjon 'vllm' (port $PORT, $TP_SIZE kort, util $GPU_UTIL)"
+step "Starting vLLM in tmux session 'vllm' (port $PORT, $TP_SIZE cards, util $GPU_UTIL)"
 
-# Bygg vLLM-kommandoen som array — robust mot spesialtegn i rope-scaling-JSON.
+# Build the vLLM command as an array — robust against special chars in the rope-scaling JSON.
 CMD=( vllm serve "$MODEL_ID"
   --host 0.0.0.0 --port "$PORT"
   --api-key "$API_KEY"
@@ -83,45 +82,45 @@ CMD=( vllm serve "$MODEL_ID"
   --max-model-len "$MAX_LEN"
   --max-num-seqs "$MAX_NUM_SEQS" )
 
-# YaRN: strekk native kontekst til MAX_LEN. factor = MAX_LEN / native.
+# YaRN: stretch native context to MAX_LEN. factor = MAX_LEN / native.
 if [ "$LONG_CONTEXT" = "1" ] && [ "$MAX_LEN" -gt "$NATIVE_CTX" ]; then
   FACTOR=$(awk "BEGIN{printf \"%.2f\", $MAX_LEN/$NATIVE_CTX}")
   CMD+=( --rope-scaling "{\"rope_type\":\"yarn\",\"factor\":$FACTOR,\"original_max_position_embeddings\":$NATIVE_CTX}" )
-  info "YaRN på: $NATIVE_CTX -> $MAX_LEN tokens (factor $FACTOR)"
+  info "YaRN on: $NATIVE_CTX -> $MAX_LEN tokens (factor $FACTOR)"
 fi
-# fp8 KV-cache halverer minnet så lang kontekst får plass på ett A100 80GB.
+# fp8 KV cache halves the memory so long context fits on one A100 80GB.
 [ "$KV_CACHE_DTYPE" != "auto" ] && CMD+=( --kv-cache-dtype "$KV_CACHE_DTYPE" )
 
-# Skriv en launcher så quoting (bl.a. JSON-en) overlever inn i tmux.
+# Write a launcher so the quoting (notably the JSON) survives into tmux.
 LAUNCHER="$HOME/.cyberrig_vllm_launch.sh"
 { printf '#!/usr/bin/env bash\n'; printf '%q ' "${CMD[@]}"; printf '\n'; } > "$LAUNCHER"
 chmod +x "$LAUNCHER"
-info "Launch-kommando: $LAUNCHER (cat for å inspisere)"
+info "Launch command: $LAUNCHER (cat to inspect)"
 tmux new-session -d -s vllm "bash '$LAUNCHER' 2>&1 | tee \$HOME/vllm.log"
-info "Logg strømmes til ~/vllm.log  (tmux attach -t vllm for live)"
+info "Log streams to ~/vllm.log  (tmux attach -t vllm for live)"
 
-# --- Vent, med timeout og feildeteksjon --------------------------------
-step "Venter på at API-et blir klart"
-info "Første oppstart tar typisk 1-3 min (vekter + CUDA-grafer)."
-DEADLINE=$(( $(date +%s) + 600 ))   # 10 min tak
+# --- Wait, with timeout and failure detection -------------------------
+step "Waiting for the API to become ready"
+info "First startup typically takes 1-3 min (weights + CUDA graphs)."
+DEADLINE=$(( $(date +%s) + 600 ))   # 10 min cap
 while :; do
   if curl -s -H "Authorization: Bearer ${API_KEY}" "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
-    echo ""; ok "vLLM er oppe: http://localhost:${PORT}/v1"
+    echo ""; ok "vLLM is up: http://localhost:${PORT}/v1"
     break
   fi
-  # Død sesjon? Da er det en reell feil — vis den.
+  # Dead session? Then it's a real failure — show it.
   if ! tmux has-session -t vllm 2>/dev/null; then
     echo ""
-    warn "vLLM-prosessen døde under oppstart. Siste feil fra loggen:"
+    warn "The vLLM process died during startup. Last error from the log:"
     grep -i -E "error|valueerror|runtimeerror|out of memory" "$HOME/vllm.log" | tail -15
-    die "Oppstart feilet — se ~/vllm.log. Ved VRAM-feil: kjør ./preflight.sh."
+    die "Startup failed — see ~/vllm.log. On a VRAM error: run ./preflight.sh."
   fi
   if [ "$(date +%s)" -gt "$DEADLINE" ]; then
-    echo ""; die "Timeout (10 min). Sjekk ~/vllm.log og tmux attach -t vllm."
+    echo ""; die "Timeout (10 min). Check ~/vllm.log and tmux attach -t vllm."
   fi
   printf "."
   sleep 5
 done
 
-info "Følg loggen: tmux attach -t vllm   (Ctrl-b d for å koble fra)"
-info "Stopp:       tmux kill-session -t vllm"
+info "Follow the log: tmux attach -t vllm   (Ctrl-b d to detach)"
+info "Stop:          tmux kill-session -t vllm"
