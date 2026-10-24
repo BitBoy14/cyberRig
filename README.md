@@ -54,11 +54,24 @@ Disse feilene er allerede håndtert — du skal slippe å treffe dem igjen:
 | Vast-imagets egen vLLM (supervisor, autorestart) holdt ~21 GB VRAM | `serve.sh` kjører `supervisorctl stop vllm model-ui ray` før opprydding; `preflight.sh` skiller dette fra et ekte delt kort (GO, ikke NO-GO) |
 | Delt/opptatt GPU | `preflight.sh` fanger det før install |
 | `hermes`-parser matchet ikke Qwen3-Coder-formatet modellen sender (`<function=..><parameter=..>`) → tool-calls ble ren tekst, aldri utført | Default-parser er `qwen3_coder`; `smoke-test.sh` steg 3 fanger mismatch |
+| CAI fylte 32k-konteksten på lange agent-økter → `ContextWindowExceededError`, krasj | YaRN til 128k som default (`LONG_CONTEXT=1`) + `fp8` KV-cache for å få plass på ett A100 80GB |
 
 ---
 
 ## Endre GPU-antall
 `TP_SIZE=2` i `config.env` for 2× kort (tensor-parallellisme).
+
+## Lang kontekst (YaRN)
+Modellen er 32768 tokens native. Default serverer vi **128k via YaRN**
+(`LONG_CONTEXT=1`, `MAX_MODEL_LEN=131072`) fordi CAI fyller 32k raskt på lange
+agent-økter. `serve.sh` regner `factor = MAX_MODEL_LEN / 32768` selv og skriver
+launch-kommandoen til `~/.cyberrig_vllm_launch.sh` (cat for å inspisere).
+`KV_CACHE_DTYPE=fp8` halverer KV-cachen så 128k får plass på ett A100 80GB.
+
+VRAM-feil ved oppstart (`No available memory for the cache blocks`)? Senk
+`MAX_MODEL_LEN` (f.eks. 65536), senk `GPU_UTIL`, eller bruk 2× kort. Trenger du
+ikke lang kontekst: `LONG_CONTEXT=0` + `MAX_MODEL_LEN=32768`. Feiler `--rope-scaling`
+på en eldre vLLM, bytt `rope_type` → `type` i `serve.sh`.
 
 ## Bytte modell
 Sett `MODEL_ID` og riktig `TOOL_PARSER` i `config.env`. Parseren må matche
