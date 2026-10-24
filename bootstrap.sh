@@ -8,7 +8,7 @@ source ./lib.sh
 [ -f ./config.env ] && { set -a; source ./config.env; set +a; }
 
 MODEL_ID="${MODEL_ID:-philbert440/Qwen3.6-27B-Uncensored-Cyber}"
-TOOL_PARSER="${TOOL_PARSER:-hermes}"
+TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
 MAX_LEN="${MAX_MODEL_LEN:-32768}"
 PORT="${PORT:-8001}"                 # 8001: 8000 er opptatt av Vast sin caddy
 TP_SIZE="${TP_SIZE:-1}"

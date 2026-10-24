@@ -35,7 +35,7 @@ if [ -n "$TC" ] && [ "$TC" != "null" ]; then
   info "$TC"
   ok "Tool-calling virker — parseren ($TOOL_PARSER) er riktig"
 else
-  warn "Ingen tool_call. Feil --tool-call-parser? Qwen-base=hermes, Llama-base=llama3_json"
+  warn "Ingen tool_call. Feil --tool-call-parser? Qwen3-Coder=qwen3_coder, Qwen2.5/Hermes=hermes, Llama=llama3_json"
 fi
 
 echo ""
