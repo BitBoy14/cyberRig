@@ -9,7 +9,9 @@ source ./lib.sh
 
 MODEL_ID="${MODEL_ID:-philbert440/Qwen3.6-27B-Uncensored-Cyber}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
-MAX_LEN="${MAX_MODEL_LEN:-32768}"
+MAX_LEN="${MAX_MODEL_LEN:-131072}"
+LONG_CONTEXT="${LONG_CONTEXT:-1}"
+KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 PORT="${PORT:-8001}"                 # 8001: 8000 er opptatt av Vast sin caddy
 TP_SIZE="${TP_SIZE:-1}"
 GPU_UTIL="${GPU_UTIL:-0.85}"
@@ -21,6 +23,7 @@ LOG="$HOME/bootstrap.log"
 printf "${C_BOLD}${C_CYA}=== BOOTSTRAP ===${C_RESET}\n"
 info "Modell:      $MODEL_ID"
 info "Port:        $PORT   |  Parser: $TOOL_PARSER  |  Kort: $TP_SIZE"
+info "Kontekst:    $MAX_LEN  |  YaRN: $LONG_CONTEXT  |  KV: $KV_CACHE_DTYPE"
 info "Full logg:   $LOG"
 
 # --- 1. Systempakker ---------------------------------------------------
@@ -114,6 +117,8 @@ CAI_MODEL=openai/${MODEL_ID}
 MODEL_ID=${MODEL_ID}
 TOOL_PARSER=${TOOL_PARSER}
 MAX_MODEL_LEN=${MAX_LEN}
+LONG_CONTEXT=${LONG_CONTEXT}
+KV_CACHE_DTYPE=${KV_CACHE_DTYPE}
 PORT=${PORT}
 TP_SIZE=${TP_SIZE}
 GPU_UTIL=${GPU_UTIL}
