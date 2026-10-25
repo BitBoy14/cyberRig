@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # install.sh — wires CyberRig's default pentest agent into CAI.
 #
-# Drops the custom agent + its prompt into CAI's `personal/` agents dir (the
-# intended, reinstall-safe extension point CAI auto-discovers), then records
-# CYBERRIG_HOME and CAI_AGENT_TYPE in ~/.env so ./run-cai.sh picks it up.
+# Drops the custom agent + its prompt into CAI's `personal/` agents dir and
+# re-exports it from personal/__init__.py (CAI 0.5.x discovery imports the
+# package __init__, not submodules), then records CYBERRIG_HOME and
+# CAI_AGENT_TYPE in ~/.env so ./run-cai.sh picks it up.
 #
 # Idempotent. Safe to re-run on a fresh instance. If CAI isn't installed, it
 # explains what to do and exits without touching anything else.
@@ -46,11 +47,20 @@ ok "Found: $AGENTS_DIR"
 # --- 2. Install the agent + prompt into personal/ ----------------------
 step "Installing agent into personal/"
 mkdir -p "$PERSONAL"
-# personal/ must be an importable package for CAI's importlib to load it.
-[ -f "$PERSONAL/__init__.py" ] || printf '# CyberRig personal agents\n' > "$PERSONAL/__init__.py"
 cp -f ./cyberrig_pentest.py "$PERSONAL/cyberrig_pentest.py"
 cp -f ./pentest-default.md  "$PERSONAL/pentest-default.md"
-ok "Copied cyberrig_pentest.py + pentest-default.md -> $PERSONAL"
+# CAI 0.5.x's get_available_agents() discovers agents via
+# pkgutil.iter_modules(cai/agents) — TOP LEVEL ONLY, it does not recurse into
+# submodules. It imports the `personal` PACKAGE (its __init__.py), never
+# personal/cyberrig_pentest.py. So the __init__ must re-export the Agent
+# instance, otherwise discovery imports an empty package and never sees it.
+REEXPORT="from .cyberrig_pentest import cyberrig_pentest_agent"
+touch "$PERSONAL/__init__.py"
+if ! grep -qF "$REEXPORT" "$PERSONAL/__init__.py"; then
+  printf '# CyberRig personal agents. The re-export below is required: CAI\n# discovery imports this package __init__, not the submodule.\n%s  # noqa: F401\n' \
+    "$REEXPORT" >> "$PERSONAL/__init__.py"
+fi
+ok "Copied cyberrig_pentest.py + pentest-default.md -> $PERSONAL (re-exported in __init__.py)"
 
 # --- 3. Verify CAI discovers it, learn the exact key -------------------
 step "Verifying discovery"
