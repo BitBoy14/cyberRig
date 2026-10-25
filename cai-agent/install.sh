@@ -10,6 +10,10 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 source ../lib.sh 2>/dev/null || { echo "cannot find ../lib.sh"; exit 1; }
+# Pull in OPENAI_API_KEY etc. (like the other rig scripts) so the discovery
+# steps below can import agent modules that build an OpenAI client at import
+# time. We still pass a placeholder per-invocation in case ~/.env lacks it.
+[ -f "$HOME/.env" ] && { set -a; source "$HOME/.env"; set +a; }
 
 RIG_HOME="$(cd .. && pwd)"
 CAI_VENV="${CAI_VENV:-$HOME/cai-venv}"
@@ -26,7 +30,7 @@ step "Locating CAI agents directory"
 # CAI prints a "Total CAI Session Cost" banner to stdout when the interpreter
 # exits, which contaminates command substitution. Tag our real output with a
 # sentinel and extract only that line so the banner can't poison AGENTS_DIR.
-AGENTS_DIR="$("$CAI_VENV/bin/python" - <<'PY' 2>/dev/null | sed -n 's/^__CYBERRIG_AGENTS_DIR__=//p'
+AGENTS_DIR="$(OPENAI_API_KEY="${OPENAI_API_KEY:-sk-cyberrig-noop}" "$CAI_VENV/bin/python" - <<'PY' 2>/dev/null | sed -n 's/^__CYBERRIG_AGENTS_DIR__=//p'
 import os
 try:
     import cai.agents as a
@@ -50,7 +54,7 @@ ok "Copied cyberrig_pentest.py + pentest-default.md -> $PERSONAL"
 
 # --- 3. Verify CAI discovers it, learn the exact key -------------------
 step "Verifying discovery"
-KEY="$("$CAI_VENV/bin/python" - "$AGENT_VAR" <<'PY' 2>/dev/null | sed -n 's/^__CYBERRIG_KEY__=//p'
+KEY="$(OPENAI_API_KEY="${OPENAI_API_KEY:-sk-cyberrig-noop}" "$CAI_VENV/bin/python" - "$AGENT_VAR" <<'PY' 2>/dev/null | sed -n 's/^__CYBERRIG_KEY__=//p'
 import sys
 want = sys.argv[1]
 try:
