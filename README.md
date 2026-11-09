@@ -30,6 +30,52 @@ want to change model, port or GPU count. Without it, sensible defaults are used.
 
 ---
 
+## Running a pentest
+
+> Only against a target you **own** or have **written authorization** to test.
+> The `--authorized` flag is your assertion of that. Replace
+> `https://target.example.com` below with your target.
+
+Two steps — recon first, then hand the task to the agent:
+
+**1. Recon (pull known holes before sending any offensive traffic):**
+
+```bash
+cd ~/rig
+./recon/vuln-recon.sh --authorized https://target.example.com
+```
+
+It fingerprints the target, looks the product + version up in CISA KEV / NVD /
+searchsploit, and writes a brief. Read it. (Passive-only variant, no traffic to
+the target: `./recon/vuln-recon.sh --product php --version 8.2.10`.)
+
+**2. Start the agent and give it the engagement:**
+
+```bash
+./serve.sh      # if vLLM isn't already running
+./run-cai.sh
+```
+
+Then, inside CAI's prompt:
+
+```
+Authorized pentest of https://target.example.com (I own this server).
+Standard order: fingerprint -> run
+$CYBERRIG_HOME/recon/vuln-recon.sh --authorized https://target.example.com
+to pull known holes -> prioritize CISA KEV hits -> then test only low-impact,
+reversible checks within scope. If it's PHP, cross-check against php2shell
+(CVE-2026-109618/109619). Report findings against the version; no exploit
+payloads in the report. If a tool is missing, install it yourself with
+$CYBERRIG_HOME/recon/install-tools.sh <tool> and continue.
+```
+
+The agent already enforces "known holes first" and installs missing tools on its
+own — writing the scope explicitly just keeps it on the rails. Re-run
+`./cai-agent/install.sh` once after a `git pull` so the agent picks up prompt
+changes.
+
+---
+
 ## The most important part: preflight
 
 `./preflight.sh` checks that the card is actually **free for you**, not just
