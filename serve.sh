@@ -19,6 +19,16 @@ NATIVE_CTX="${NATIVE_CTX:-32768}"       # the model's native context (Qwen3 = 32
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"      # Mamba hybrid: each sequence takes one Mamba cache
                                         # block. vLLM default (256) blows up at long
                                         # context; 16 is plenty for one agent
+# Qwen3.6 reasons in "thinking" mode by default, wrapping it in <think>…</think>.
+# Without a reasoning parser that text leaks into the message body (you'll see
+# bare </think> in the agent output) and can corrupt tool calls. 'qwen3' splits
+# reasoning from the answer. Set REASONING_PARSER="" to disable (e.g. if a future
+# model doesn't emit think tags, or tool-calling misbehaves on your vLLM build).
+REASONING_PARSER="${REASONING_PARSER:-qwen3}"
+# Optional default sampling as a JSON blob (vLLM --override-generation-config).
+# Qwen3 thinking mode wants temp≈0.6 top_p 0.95 top_k 20 — NOT greedy (temp 0
+# loops). Empty = leave it to the client (CAI). See config.env.example.
+GEN_CONFIG_OVERRIDE="${GEN_CONFIG_OVERRIDE:-}"
 
 printf "${C_BOLD}${C_CYA}=== SERVE ===${C_RESET}\n"
 
@@ -97,6 +107,10 @@ CMD=( vllm serve "$MODEL_PATH"
   --max-model-len "$MAX_LEN"
   --max-num-seqs "$MAX_NUM_SEQS" )
 [ -n "$SERVED_NAME" ] && CMD+=( --served-model-name "$SERVED_NAME" )
+# Reasoning (thinking) mode: split <think>…</think> from the answer so it doesn't
+# leak into tool calls. Optional default sampling override.
+[ -n "$REASONING_PARSER" ]   && CMD+=( --reasoning-parser "$REASONING_PARSER" )
+[ -n "$GEN_CONFIG_OVERRIDE" ] && CMD+=( --override-generation-config "$GEN_CONFIG_OVERRIDE" )
 
 # YaRN: stretch native context to MAX_LEN. factor = MAX_LEN / native.
 # vLLM 0.11.1 removed the --rope-scaling / --rope-theta flags; the documented

@@ -2,17 +2,19 @@
 # vuln-recon.sh — pull KNOWN holes for a target BEFORE an authorized test.
 #
 # What it does:
-#   1. (optional, requires authorization) fingerprints the target: Server/X-Powered-By
-#      -> product + version.
+#   1. (optional, requires authorization) fingerprints the target: HTTP
+#      headers + body (Server/X-Powered-By/generator/title/cookies), plus
+#      whatweb and a container-safe nmap -sV when installed, and flags any
+#      WAF/CDN (Cloudflare etc.) -> product + version.
 #   2. looks up known holes in the authoritative, living sources for that version:
 #        - CISA KEV   (holes actually exploited in the wild — source of truth)
 #        - NVD API    (all CVEs with CVSS for the exact product+version)
 #        - searchsploit (public PoC/exploit, if installed)
 #   3. writes a markdown brief the agent reads before the test starts.
 #
-# It is READ-ONLY: CVE lookups are public data; the only traffic sent to the
-# TARGET is one HEAD request for fingerprinting, and that requires --authorized.
-# No exploitation, no payloads.
+# It is READ-ONLY: CVE lookups are public data; the traffic sent to the TARGET is
+# ordinary read-only requests (a GET, optional whatweb, and a light nmap service
+# scan), and that requires --authorized. No exploitation, no payloads.
 #
 # Usage:
 #   ./vuln-recon.sh --authorized https://target.example.com       # fingerprint + lookup
@@ -55,33 +57,81 @@ printf "${C_BOLD}${C_CYA}=== VULN-RECON ===${C_RESET}\n"
 [ -n "$TARGET" ] && info "Target:   $TARGET"
 mkdir -p "$OUT"
 
-# --- 1. Fingerprint (touches the target -> requires authorization) -----
-SERVER=""; XPOWERED=""
+# --- 1. Fingerprint (read-only, but touches the target -> needs authorization) -
+# Richer than a single HEAD: a GET for headers+body (meta generator, title,
+# cookies), plus whatweb and a container-safe nmap -sV when available. All
+# read-only — no payloads, no exploitation. A weak fingerprint is what makes the
+# whole brief useless, so we gather what we can and, when we find nothing, we say
+# so honestly instead of guessing "php".
+SERVER=""; XPOWERED=""; GENERATOR=""; TITLE=""; COOKIES=""; WAF=""
+NMAP_OUT=""; WHATWEB_OUT=""; FP_SRC=""
+UA="Mozilla/5.0 (X11; Linux x86_64) CyberRig-Recon"
 if [ -n "$TARGET" ] && [ "$NO_FP" -eq 0 ]; then
   if [ "$AUTHORIZED" -ne 1 ]; then
     warn "No --authorized: skipping fingerprint (no traffic to the target)."
     warn "CVE lookups still run. Pass --authorized once you have written scope,"
     warn "or give --product/--version manually for version-precise matches."
   else
-    step "Fingerprint (one HEAD request to the target)"
-    HDRS="$(curl -sS -I -L --max-time 12 "$TARGET" 2>/dev/null)" \
-      || warn "HEAD to the target failed (continuing with manual values if given)."
-    SERVER="$(printf '%s' "$HDRS"   | awk -F': ' 'tolower($1)=="server"{print $2}'       | tr -d '\r' | head -1)"
-    XPOWERED="$(printf '%s' "$HDRS" | awk -F': ' 'tolower($1)=="x-powered-by"{print $2}' | tr -d '\r' | head -1)"
-    [ -n "$SERVER" ]   && ok "Server:       $SERVER"
-    [ -n "$XPOWERED" ] && ok "X-Powered-By: $XPOWERED"
-    [ -z "$SERVER$XPOWERED" ] && warn "No revealing headers (good for the target; don't guess the version)."
-    # Infer product/version from headers unless set explicitly
+    HOST="$(printf '%s' "$TARGET" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##; s#:[0-9]+$##')"
+
+    step "Fingerprint — HTTP headers + body (GET)"
+    BODY="$OUT/.fp-body.$$"; HDRS=""
+    HDRS="$(curl -sS -D - -o "$BODY" -L --max-time 15 -A "$UA" "$TARGET" 2>/dev/null)" \
+      || warn "GET to the target failed (continuing with manual values if given)."
+    _hdr() { printf '%s' "$HDRS" | awk -F': ' -v k="$1" 'tolower($1)==k{sub($1": ","");print;exit}' | tr -d '\r'; }
+    SERVER="$(_hdr server)"; XPOWERED="$(_hdr x-powered-by)"
+    COOKIES="$(printf '%s' "$HDRS" | awk -F'[:=]' 'tolower($1)=="set-cookie"{print $2}' | tr -d '\r ' | paste -sd, - 2>/dev/null)"
+    # WAF / CDN markers — vital: hammering one of these gets your source IP blocked.
+    printf '%s' "$HDRS" | grep -qiE 'cf-ray|server:\s*cloudflare' && WAF="Cloudflare"
+    [ -z "$WAF" ] && printf '%s' "$HDRS" | grep -qiE 'x-sucuri|incap_ses|akamai|x-akamai|aws.?waf|x-amz-cf' && WAF="CDN/WAF"
+    if [ -s "$BODY" ]; then
+      GENERATOR="$(grep -ioE '<meta[^>]+name=["'\'']generator["'\''][^>]*>' "$BODY" | grep -ioE 'content=["'\''][^"'\'']*' | sed -E 's/content=["'\'']//' | head -1)"
+      TITLE="$(grep -ioE '<title>[^<]*' "$BODY" | sed -E 's/<title>//I' | head -1 | cut -c1-120)"
+    fi
+    rm -f "$BODY" 2>/dev/null
+    [ -n "$SERVER" ]    && ok "Server:        $SERVER"
+    [ -n "$XPOWERED" ]  && ok "X-Powered-By:  $XPOWERED"
+    [ -n "$GENERATOR" ] && ok "Generator:     $GENERATOR"
+    [ -n "$WAF" ]       && warn "WAF/CDN detected: $WAF — pace requests; aggressive scanning WILL get this rig's IP blocked."
+    [ -z "$SERVER$XPOWERED$GENERATOR" ] && warn "No revealing HTTP markers (don't guess — try nmap/whatweb below)."
+
+    # whatweb — richer app/framework fingerprint (if installed)
+    if command -v whatweb >/dev/null 2>&1; then
+      step "Fingerprint — whatweb"
+      WHATWEB_OUT="$(whatweb --color=never --no-errors -a 1 "$TARGET" 2>/dev/null | sed -n '1,8p')"
+      [ -n "$WHATWEB_OUT" ] && ok "whatweb returned data" || info "whatweb returned nothing."
+    fi
+
+    # nmap -sV — service/version. Container-safe: -sT (TCP connect, no raw
+    # sockets), -Pn (skip ping/ICMP, also raw-socket), --unprivileged. Vast
+    # containers can't open raw sockets, so the default SYN scan (-sS) fails.
+    if command -v nmap >/dev/null 2>&1 && [ -n "$HOST" ]; then
+      step "Fingerprint — nmap -sV (TCP connect, container-safe)"
+      NMAP_OUT="$(nmap -Pn -sT --unprivileged -sV --version-light --open \
+                   -p 80,443,8080,8443 -T4 --host-timeout 90s "$HOST" 2>/dev/null \
+                   | grep -E '^[0-9]+/tcp|Service Info|OS details' | sed -n '1,12p')"
+      [ -n "$NMAP_OUT" ] && ok "nmap returned open ports/services" || info "nmap found nothing (filtered/blocked?)."
+    fi
+
+    # --- Infer product + version from everything we gathered ---------------
+    ALL="$XPOWERED | $SERVER | $GENERATOR | $WHATWEB_OUT | $NMAP_OUT"
     if [ -z "$VERSION" ]; then
-      VERSION="$(printf '%s %s' "$XPOWERED" "$SERVER" | grep -oiE 'php/[0-9]+(\.[0-9]+){1,2}' | head -1 | cut -d/ -f2)"
+      # PHP first (the rig's focus), then common web servers.
+      VERSION="$(printf '%s' "$ALL" | grep -oiE 'php/[0-9]+(\.[0-9]+){1,2}'     | head -1 | cut -d/ -f2)"
+      [ -z "$VERSION" ] && VERSION="$(printf '%s' "$ALL" | grep -oiE '(nginx|apache|openresty|litespeed)/[0-9]+(\.[0-9]+){1,2}' | head -1 | cut -d/ -f2)"
     fi
     if [ -z "$PRODUCT" ]; then
-      printf '%s %s' "$XPOWERED" "$SERVER" | grep -qi php && PRODUCT="php"
+      if printf '%s' "$ALL" | grep -qi php; then PRODUCT="php"
+      else PRODUCT="$(printf '%s' "$ALL" | grep -oiE 'nginx|apache|openresty|litespeed|iis|tomcat|wordpress|drupal|joomla' | head -1 | tr 'A-Z' 'a-z')"
+      fi
     fi
+    [ -n "$PRODUCT" ] && FP_SRC="fingerprinted"
   fi
 fi
-[ -z "$PRODUCT" ] && PRODUCT="php"   # default focus for this rig
-[ -n "$VERSION" ] && info "Looking up: $PRODUCT $VERSION" || info "Looking up: $PRODUCT (no version -> criticals)"
+# Last-resort fallback so the DB lookups still have a keyword — but flag it clearly
+# as an ASSUMPTION, not a fingerprint, so the agent knows to prove the stack itself.
+if [ -z "$PRODUCT" ]; then PRODUCT="php"; FP_SRC="ASSUMED (not fingerprinted — prove the real stack before trusting this brief)"; fi
+[ -n "$VERSION" ] && info "Looking up: $PRODUCT $VERSION" || info "Looking up: $PRODUCT (no version -> criticals) [$FP_SRC]"
 
 SAFE="$(printf '%s' "${TARGET:-$PRODUCT}" | sed 's#https\{0,1\}://##; s#[^A-Za-z0-9._-]#_#g')"
 REPORT="$OUT/known-vulns-${SAFE}-$(date +%Y%m%d).md"
@@ -93,8 +143,29 @@ REPORT="$OUT/known-vulns-${SAFE}-$(date +%Y%m%d).md"
   echo "> Sources: CISA KEV, NVD, searchsploit. Prioritize KEV hits (proven exploited) first."
   echo "> Always match against the ACTUAL version before concluding. No payloads here."
   echo
-  [ -n "$SERVER" ]   && echo "- Server: \`$SERVER\`"
-  [ -n "$XPOWERED" ] && echo "- X-Powered-By: \`$XPOWERED\`"
+  echo "## Fingerprint"
+  echo
+  echo "- Product looked up: **$PRODUCT** ${VERSION:+(version **$VERSION**)} — _${FP_SRC}_"
+  [ -n "$SERVER" ]    && echo "- Server: \`$SERVER\`"
+  [ -n "$XPOWERED" ]  && echo "- X-Powered-By: \`$XPOWERED\`"
+  [ -n "$GENERATOR" ] && echo "- Generator: \`$GENERATOR\`"
+  [ -n "$TITLE" ]     && echo "- Title: \`$TITLE\`"
+  [ -n "$COOKIES" ]   && echo "- Cookies: \`$COOKIES\`"
+  if [ -n "$WAF" ]; then
+    echo
+    echo "> ⚠️ **WAF/CDN detected: $WAF.** Requests are proxied and rate-limited."
+    echo "> Pace your testing — bursts of requests will get this rig's source IP"
+    echo "> blocked (you'll see connection refused / HTTP 000). Fingerprint the"
+    echo "> ORIGIN where possible; results below describe the edge otherwise."
+  fi
+  if [ -n "$WHATWEB_OUT" ]; then echo; echo "**whatweb:**"; echo '```'; printf '%s\n' "$WHATWEB_OUT"; echo '```'; fi
+  if [ -n "$NMAP_OUT" ];   then echo; echo "**nmap -sV:**"; echo '```'; printf '%s\n' "$NMAP_OUT"; echo '```'; fi
+  if [ "${FP_SRC%% *}" = "ASSUMED" ]; then
+    echo
+    echo "> ⚠️ **Stack not confirmed.** No product/version was fingerprinted; the"
+    echo "> lookups below assume \`php\` as this rig's default focus and may be"
+    echo "> irrelevant. Prove the real product + version before trusting any of it."
+  fi
   echo
 } >> "$REPORT"
 
@@ -163,7 +234,7 @@ if curl -sS --max-time 40 ${NVD_HDR[@]+"${NVD_HDR[@]}"} "$NVD_URL" -o "$NVD" 2>/
   } >> "$REPORT"
 else
   warn "NVD did not respond as expected (rate limit? set NVD_API_KEY). Continuing."
-  echo -e "## NVD\n\n_API unavailable/rate-limited at run time. Look up manually: $NVD_URL_\n" >> "$REPORT"
+  echo -e "## NVD\n\n_API unavailable/rate-limited at run time. Look up manually: ${NVD_URL}_\n" >> "$REPORT"
 fi
 
 # --- 4. searchsploit — public PoC/exploit (if installed) ---------------

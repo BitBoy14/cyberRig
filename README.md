@@ -149,6 +149,11 @@ These failures are already handled — you shouldn't hit them again:
 | CAI tore out vLLM's packages | CAI in its own isolated venv + `mcp>=2.3` |
 | Port 8000 taken by Vast's caddy | Uses port 8001 |
 | A crashed vLLM held VRAM as a zombie | `serve.sh` clears it with `fuser -k /dev/nvidia*` |
+| `<think>` reasoning leaked into answers/tool calls | `serve.sh` sets `--reasoning-parser qwen3` (Qwen3.6 thinks by default); tune via `REASONING_PARSER` |
+| Greedy sampling made the model loop / go in circles | Recommended thinking-mode sampling in `config.env.example` (`GEN_CONFIG_OVERRIDE`) |
+| Weak fingerprint → useless generic CVE list | `vuln-recon.sh` now uses GET + whatweb + nmap, flags WAF/CDN, and says "stack unconfirmed" instead of guessing |
+| nmap failed: can't open raw sockets (container) | Use `nmap -Pn -sT -sV --unprivileged` (TCP connect); baked into `vuln-recon.sh` and the agent prompt |
+| Agent got IP-blocked by WAF from request bursts | Agent prompt + brief warn to pace requests; being blocked is a finding, not a wall |
 | The Vast image's own vLLM (supervisor, autorestart) held ~21 GB VRAM | `serve.sh` runs `supervisorctl stop vllm model-ui ray` before cleanup; `preflight.sh` separates this from a genuinely shared card (GO, not NO-GO) |
 | Shared/busy GPU | `preflight.sh` catches it before install |
 | The `hermes` parser didn't match the Qwen3-Coder format the model sends (`<function=..><parameter=..>`) → tool-calls became plain text, never executed | Default parser is `qwen3_coder`; `smoke-test.sh` step 3 catches a mismatch |
