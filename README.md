@@ -16,7 +16,6 @@ Pick a **vLLM image** + **A100 80GB (dedicated!)** on Vast. SSH in, then:
 
 ```bash
 git clone https://github.com/BitBoy14/cyberRig rig && cd rig
-chmod +x *.sh recon/*.sh cai-agent/*.sh
 ./preflight.sh        # STOP here if NO-GO — don't install on the wrong card
 ./bootstrap.sh        # packages, model download, CAI (mostly download)
 ./serve.sh            # clears VRAM, starts vLLM in tmux, waits until ready
