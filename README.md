@@ -72,8 +72,20 @@ Pinned right now: **PHP "php2shell"** — CVE-2026-109618 / CVE-2026-109619,
 unauthenticated RCE, CVSS 9.2, fixed in PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35
 (emergency release 2026-10-21). A target below those is flagged critical.
 
-Optional: set `NVD_API_KEY` to raise NVD's rate limit (5 → 50 calls / 30 s);
-`apt-get install -y exploitdb` adds offline `searchsploit` results.
+Optional: set `NVD_API_KEY` to raise NVD's rate limit (5 → 50 calls / 30 s).
+
+**Recon tooling** (`nmap`, `searchsploit`, `whatweb`) is installed by
+`./bootstrap.sh` via `recon/install-tools.sh`, which installs each tool
+independently (so a missing `exploitdb` apt package can't block `nmap`) and
+git-clones Exploit-DB when apt has no `exploitdb`. The CAI agent can install
+anything else it needs at runtime with
+`$CYBERRIG_HOME/recon/install-tools.sh <tool>` (or `apt-get`/`pip`) — so a
+missing tool no longer stops an engagement. Install more by hand anytime:
+
+```bash
+./recon/install-tools.sh                 # default set (nmap searchsploit whatweb curl jq)
+./recon/install-tools.sh gobuster sqlmap # add specific tools
+```
 
 ---
 

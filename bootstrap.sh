@@ -36,18 +36,23 @@ run_quiet "installing"      "$LOG" -- apt-get install -y -qq git git-lfs tmux cu
 git lfs install --skip-repo >>"$LOG" 2>&1 || true
 ok "System packages ready"
 
-# --- 2. Recon/pentest tooling (non-fatal) ------------------------------
-# Supports recon/vuln-recon.sh: searchsploit (exploitdb) for public PoCs,
-# whatweb + nmap for fingerprinting. Non-fatal: on an image where a package
-# isn't in the repos, we warn and continue — the vLLM core is unaffected.
-step "Recon tooling (exploitdb/searchsploit, whatweb, nmap)"
-if run_quiet "installing recon tools" "$LOG" -- apt-get install -y -qq exploitdb whatweb nmap; then
-  command -v searchsploit >/dev/null 2>&1 && searchsploit -u >>"$LOG" 2>&1 || true
-  ok "Recon tooling ready"
+# --- 2. Recon/pentest tooling ------------------------------------------
+# nmap + searchsploit are required on the rig; whatweb helps fingerprinting.
+# install-tools.sh installs each one INDEPENDENTLY (so exploitdb being absent
+# from this image's apt repos can't block nmap) and git-clones Exploit-DB when
+# apt has no 'exploitdb'. Non-fatal to the vLLM core, but we verify and shout
+# if nmap/searchsploit still didn't make it.
+step "Recon tooling (nmap, searchsploit, whatweb)"
+run_quiet "installing recon tools" "$LOG" -- ./recon/install-tools.sh nmap searchsploit whatweb curl jq \
+  || warn "install-tools.sh reported some tools missing (see $LOG)."
+MISSING=""
+for t in nmap searchsploit; do command -v "$t" >/dev/null 2>&1 || MISSING="$MISSING $t"; done
+if [ -z "$MISSING" ]; then
+  ok "Recon tooling ready (nmap + searchsploit present)"
 else
-  warn "Could not install all recon tools via apt (not in this image's repos?)."
-  warn "vuln-recon.sh still works on CISA KEV + NVD (needs only curl + jq)."
-  warn "searchsploit fallback: git clone https://gitlab.com/exploit-database/exploitdb"
+  warn "STILL MISSING:$MISSING — the CAI agent can retry with"
+  warn "  \$CYBERRIG_HOME/recon/install-tools.sh$MISSING"
+  warn "vuln-recon.sh still works on CISA KEV + NVD (curl + jq)."
 fi
 
 # --- 3. vLLM / torch: DON'T touch if present ---------------------------
