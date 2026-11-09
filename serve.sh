@@ -6,6 +6,9 @@ set -uo pipefail
 cd "$(dirname "$0")"
 source ./lib.sh
 [ -f "$HOME/.env" ] && { set -a; source "$HOME/.env"; set +a; }
+# config.env (the user's tuning file) wins over ~/.env for knobs it defines,
+# e.g. REASONING_PARSER / GEN_CONFIG_OVERRIDE / TP_SIZE.
+[ -f ./config.env ] && { set -a; source ./config.env; set +a; }
 
 PORT="${PORT:-8001}"
 TOOL_PARSER="${TOOL_PARSER:-qwen3_coder}"
@@ -24,11 +27,16 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-16}"      # Mamba hybrid: each sequence takes one 
 # bare </think> in the agent output) and can corrupt tool calls. 'qwen3' splits
 # reasoning from the answer. Set REASONING_PARSER="" to disable (e.g. if a future
 # model doesn't emit think tags, or tool-calling misbehaves on your vLLM build).
-REASONING_PARSER="${REASONING_PARSER:-qwen3}"
-# Optional default sampling as a JSON blob (vLLM --override-generation-config).
-# Qwen3 thinking mode wants temp≈0.6 top_p 0.95 top_k 20 — NOT greedy (temp 0
-# loops). Empty = leave it to the client (CAI). See config.env.example.
-GEN_CONFIG_OVERRIDE="${GEN_CONFIG_OVERRIDE:-}"
+REASONING_PARSER="${REASONING_PARSER-qwen3}"
+# Default sampling as a JSON blob (vLLM --override-generation-config). Qwen3
+# thinking mode wants temp≈0.6 top_p 0.95 top_k 20 — NOT greedy (temp 0 loops).
+# The mild presence_penalty curbs the "go in circles" repetition. This sets the
+# server-side default; CAI/clients can still override per request. Set empty to
+# disable (or if your vLLM build rejects the flag as unrecognized).
+# Default kept in its own var — a JSON literal inside ${VAR-…} trips bash brace
+# parsing (leaks a stray }). With '-', an explicit empty value disables it.
+_GEN_CONFIG_DEFAULT='{"temperature":0.6,"top_p":0.95,"top_k":20,"presence_penalty":0.5}'
+GEN_CONFIG_OVERRIDE="${GEN_CONFIG_OVERRIDE-$_GEN_CONFIG_DEFAULT}"
 
 printf "${C_BOLD}${C_CYA}=== SERVE ===${C_RESET}\n"
 
