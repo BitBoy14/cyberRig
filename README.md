@@ -110,9 +110,12 @@ active testing — the same recon phase a real vulnerability scanner runs.
 
 - **`cai-agent/`** — the default CAI agent (`cai-agent/install.sh` installs it).
   Its standing instruction is **fingerprint → run `vuln-recon.sh` and read
-  `vuln-intel.md` → prioritize CISA KEV hits → only then test, within written
-  scope**. It can read advisories online via CAI's `fetch_url` tool. So when you
-  ask for a pentest of a PHP service, the known holes are downloaded first.
+  `vuln-intel.md` → prioritize CISA KEV hits → then actively exploit to gain and
+  prove access, within authorized scope**. Known holes first is how it aims, not
+  the finish line: it chains recon into real exploitation (shell / auth bypass /
+  admin / protected data) and reports the exact reproducible path plus the fix.
+  Hard limits stay enforced — in-scope host only, no data destruction, no
+  persistence, no pivoting, no DoS. It reads advisories online via `fetch_url`.
 
 Pinned right now: **PHP "php2shell"** — CVE-2026-109618 / CVE-2026-109619,
 unauthenticated RCE, CVSS 9.2, fixed in PHP 8.5.12 / 8.4.27 / 8.3.36 / 8.2.35
